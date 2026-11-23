@@ -21,6 +21,33 @@ uv pip check --python .venv/bin/python
 
 以上命令在本地现有公共缓存上真实执行通过，无需新增下载。新机器缓存为空时，先准备匹配Python与锁定公共构建包，或在可联网安装环境移除安装命令中的offline；API、测试与样例运行不需要网络。示例创建 `run/sample.json`，目标已存在会拒绝覆盖；重复运行请先自行保留产物并选择新的演示工作副本。
 
+## 离线分片发布与接收
+
+发布端 `morph_paths.release.build_release(data)` 复用 `process` 的编译语义，把全部词形按「最终NFC词面UTF-8 SHA-256首字符」切成16个可单独传输的JSON数组，并给出清单字节与发布版ID；接收端 `morph_paths.receiver.Workspace(path)` 在本地目录维护当前视图与至多一个暂存切换，只订阅需要的分片。完整数据契约见 [数据契约](docs/contract.md)。
+
+```python
+from morph_paths import build_release, Workspace, LookupStatus
+
+release = build_release(data)                       # 发布端
+ws = Workspace("/path/to/local/workspace")          # 接收端，离线目录
+ws.prepare_switch(release.release_id, release.manifest_bytes(), ["3", "4"])
+for bucket, digest in ws.missing_shards():          # 只取订阅且缺失的分片
+    ws.deliver([{"bucket": bucket, "bytes": release.shard_bytes(bucket)}])
+ws.activate()
+result = ws.lookup(release.release_id, "é")
+assert result.status == LookupStatus.OK             # 另有 no_view/version_mismatch/not_covered/empty
+```
+
+状态与错误均为可辨识对象：`NoStagingError`、`StagingConflictError`、`NotCompleteError`、`DataIntegrityError`；`state()` 返回当前视图与暂存（含已收编号）的纯数据描述。清单与分片的字节级校验入口为 `parse_manifest` 与 `parse_shard`。
+
+端到端离线演示（发布端只交付字节，接收端看不到源输入或完整产物）：
+
+```sh
+python -I examples/offline_delivery.py
+```
+
+`fixtures/scenario_a.json`、`scenario_b0.json`、`scenario_b1.json` 是验收用三版输入：A中`é`（分片4）同时有组合派生r1与预组词元r2两个分析，`b`在分片3、`a`在分片c；B0仅改分片c中`a`的规则路径，B1在B0基础上把`é`的r1改为r2（分片4变化，分片3不变）。
+
 ## 使用与实际结果
 
 ```python
@@ -39,7 +66,7 @@ publish("run/another-sample.json", result)
 {"ambiguous_queries": 1, "derivations": 6, "distinct_surfaces": 5, "lemmas": 2, "queries": 3}
 ```
 
-已通过 6 项业务测试，另实际核对已有目标、符号链接目标、JSON重复键、非法业务输入和临时发布文件清理。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 24 项测试：原 6 项编译业务测试，以及发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）和接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 

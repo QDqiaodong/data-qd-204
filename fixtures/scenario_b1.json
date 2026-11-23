@@ -1,0 +1,54 @@
+{
+  "states": ["s0", "s1"],
+  "accepting": ["s1"],
+  "rules": [
+    {
+      "id": "r1",
+      "from": "s0",
+      "to": "s1",
+      "prefix": "",
+      "suffix": "́",
+      "requires": {"kind": "accent"},
+      "adds": {"accent": "yes"}
+    },
+    {
+      "id": "r2",
+      "from": "s0",
+      "to": "s1",
+      "prefix": "",
+      "suffix": "",
+      "requires": {"kind": "precomposed"},
+      "adds": {"tone": "base"}
+    },
+    {
+      "id": "r3",
+      "from": "s0",
+      "to": "s1",
+      "prefix": "",
+      "suffix": "",
+      "requires": {"kind": "plain"},
+      "adds": {"tone": "base"}
+    },
+    {
+      "id": "r4",
+      "from": "s0",
+      "to": "s1",
+      "prefix": "",
+      "suffix": "",
+      "requires": {"tag": "marked"},
+      "adds": {"stage": "extra"}
+    }
+  ],
+  "lemmas": [
+    {"id": "L1", "stem": "é", "state": "s0", "features": {"kind": "precomposed"}},
+    {"id": "L2", "stem": "é", "state": "s0", "features": {"kind": "precomposed"}},
+    {"id": "L3", "stem": "b", "state": "s0", "features": {"kind": "plain"}},
+    {"id": "L4", "stem": "a", "state": "s0", "features": {"kind": "plain", "tag": "marked"}}
+  ],
+  "queries": [
+    {"id": "q-e-acute", "surface": "é"},
+    {"id": "q-e", "surface": "e"},
+    {"id": "q-b", "surface": "b"},
+    {"id": "q-a", "surface": "a"}
+  ]
+}
