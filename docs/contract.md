@@ -35,3 +35,33 @@ Workspace(path)在指定本地目录保存状态，不依赖发布端进程、�
 - lookup(expected_release_id, surface)：用与输入相同的规范化口径，只查当前视图，不触发下载、不用旧版回答新版查询。LookupResult.status五态可区分：no_view（首次安装前）、version_mismatch、not_covered（词面所属分片不在覆盖中）、empty（覆盖内确实无分析）、ok（覆盖内返回该词面全部分析，顺序与编译一致）。已声明覆盖的分片缺失或损坏抛DataIntegrityError，而不是空结果。
 
 崩溃恢复：重开路径时若current与staging同ID且分片齐全，识别为提交后状态并清理暂存；否则保留提交前状态，旧视图可查、已齐暂存可继续启用。提交成功但回报前退出，重开即确认新视图已启用，无需重新交付。
+
+# 批次语料切分契约（split.build_corpora）
+
+build_corpora(data, documents, history=None) 把一批已人工签注的切词文档分成互不泄漏的训练语料与盲测语料，并给出本批训练暴露键记录。词典编译完全复用 process 的解析、特征兼容、NFC 与上限语义；候选取词典产生的全部 forms，与输入 queries 的选择和顺序无关。process、build_release、Workspace 等既有接口保持原样。
+
+## 输入
+
+- data：完整的现有五字段词典输入；词典非法抛 ValueError，不返回部分结果。
+- documents：0..12000 篇文档的数组，批内 id 唯一。每篇恰好含 id（原词条 ID 格式）、side（"train" 或 "holdout"）、drop_cost（1..1000000 的整数，布尔不算）、tokens（非空有序数组，全批合计 <=60000）。每个 token 恰好含 text（1..64 代码点、无 Cc/Cs 的原拼写）与 gold；gold 恰好含 lemma（词条 ID）、rules（0..300 个有序规则 ID）、features（<=20 对的完整特征映射）。
+- history：缺省或 None 表示首轮。否则恰好含 doc_ids、surfaces、lemmas 三个数组，每类 <=1000000 项；doc_ids/lemmas 为词条 ID 格式，surfaces 为 1..64 代码点、无 Cc/Cs 且已是 NFC 的文本。三类键各自按集合处理，数组顺序与重复不改变语义。历史键是既成事实：词元或词面今天不存在也仍然有效，不能拿新词典重算、核销或替换。
+
+结构错误（词典非法、字段缺失或多余、类型错误、重复文档 ID、超界、历史键格式非法等）抛 ValueError 并拒绝整个请求，不返回部分语料。语法合法但当前词典找不到的词元或规则引用、特征不符的签下分析不是结构错误，而是该文档标注不能沿用。
+
+## 标注复核
+
+token 按 text 的 NFC 在当前词典全部 forms 中查找，原拼写不改写。只有存在一条分析，其词元、有序规则路径与完整特征三者都与 gold 完全一致时才可沿用人工标注。同词面下不同规则路径是不同标注，特征相同也不合并；即使现在只剩一个看似等价的候选也不自动换签。任一 token 不能沿用则整篇文档不能入集，原因记为 invalid 并给出全部不能沿用的 token 位置（tokens 数组的 0 基下标）。不能沿用的文档不参与隔离、不触发冲突、不产生暴露键。
+
+## 暴露键与隔离
+
+每篇可用文档的暴露键有三类，互不混用：doc_ids 为文档 ID 本身；surfaces 为全部 token 的 NFC 词面；lemmas 为这些词面在当前词典任一分析（不只金标）涉及的词元 ID。盲测文档的任一类键命中历史训练记录即整篇排除，原因记为 history，并给出至少一个匹配的键及类别；历史训练不能通过舍弃本批某篇文档来撤回。训练文档与历史同侧，不受此限。
+
+仅在余下可用文档上选两侧交付内容：任意保留的训练文档与保留的盲测文档不得共享同类键，同侧共享不限。可以不保留某些文档，但不得挪侧、截取部分 token，或为隔离而删减一个词面的候选。满足隔离的方案中被舍弃文档的 drop_cost 总和最小（按二部冲突图最小权点覆盖求解，共享键经键节点汇流，不按文档对展开）。两侧允许为空。多解时不指定哪套最优解，但相同输入事实不得因文档数组、历史键数组或词典中无意义的排列变化而选出不同结果。
+
+## 输出
+
+返回恰好四个键：
+
+- train / holdout：交付语料，按文档 ID 排序；每篇保留 id 与有序 tokens，token 保留原拼写 text 与核准的 gold（lemma、有序 rules、完整 features）。
+- dropped：未交付文档数组，按文档 ID 排序，每项含 id 与 reason。invalid 附 token_positions；history 附 match={category,value}，给出一个实际命中历史的键；conflict 附 with 与 key={category,value}，with 是一篇实际保留的另一侧文档 ID，key 是双方共享的键，不引用同样未交付的文档。原因优先级：invalid 先于 history，history 先于 conflict。
+- exposure：本批训练暴露键记录，恰好是实际交付训练文档的三类键并集，去重排序后与历史输入同格式（doc_ids、surfaces、lemmas 三个数组），可直接并入历史。调用方只在实际使用这批训练语料后才合并；盲测、弃用文档及旧历史都不得混进这个增量。

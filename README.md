@@ -48,6 +48,24 @@ python -I examples/offline_delivery.py
 
 `fixtures/scenario_a.json`、`scenario_b0.json`、`scenario_b1.json` 是验收用三版输入：A中`é`（分片4）同时有组合派生r1与预组词元r2两个分析，`b`在分片3、`a`在分片c；B0仅改分片c中`a`的规则路径，B1在B0基础上把`é`的r1改为r2（分片4变化，分片3不变）。
 
+## 已审词形语料的训练/盲测切分
+
+`morph_paths.build_corpora(data, documents, history=None)` 处理一批已人工签注的切词文档：用当前词典复核每条签下分析（词元、有序规则路径、完整特征完全一致才可沿用），再按文档 ID、NFC 词面、相关词元三类暴露键做隔离——盲测文档命中历史训练即排除，余下文档按最小总 `drop_cost` 选出互不泄漏的两侧交付集。返回交付语料、逐篇舍弃原因（`invalid`/`history`/`conflict`）和可直接并入历史的本批训练暴露记录。完整契约见 [数据契约](docs/contract.md)。
+
+```python
+from morph_paths import build_corpora
+
+batch1 = build_corpora(dictionary, reviewed_docs)          # 首轮历史为空
+# …实际使用 batch1["train"] 训练后，再把暴露记录并入历史…
+batch2 = build_corpora(revised_dictionary, next_docs, batch1["exposure"])
+```
+
+从上一批训练输出接到下一批盲测筛选的离线演示：
+
+```sh
+python -I examples/offline_split.py
+```
+
 ## 使用与实际结果
 
 ```python
@@ -66,7 +84,7 @@ publish("run/another-sample.json", result)
 {"ambiguous_queries": 1, "derivations": 6, "distinct_surfaces": 5, "lemmas": 2, "queries": 3}
 ```
 
-已通过 24 项测试：原 6 项编译业务测试，以及发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）和接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 39 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复），以及语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 
