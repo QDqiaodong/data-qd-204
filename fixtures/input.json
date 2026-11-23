@@ -1,0 +1,84 @@
+{
+  "states": [
+    "base",
+    "number",
+    "done"
+  ],
+  "accepting": [
+    "number",
+    "done"
+  ],
+  "rules": [
+    {
+      "id": "singular",
+      "from": "base",
+      "to": "number",
+      "prefix": "",
+      "suffix": "",
+      "requires": {
+        "class": "N"
+      },
+      "adds": {
+        "number": "one"
+      }
+    },
+    {
+      "id": "plural",
+      "from": "base",
+      "to": "number",
+      "prefix": "",
+      "suffix": "s",
+      "requires": {
+        "class": "N"
+      },
+      "adds": {
+        "number": "many"
+      }
+    },
+    {
+      "id": "small",
+      "from": "number",
+      "to": "done",
+      "prefix": "mini-",
+      "suffix": "",
+      "requires": {
+        "number": "one"
+      },
+      "adds": {
+        "size": "small"
+      }
+    }
+  ],
+  "lemmas": [
+    {
+      "id": "a",
+      "stem": "dak",
+      "state": "base",
+      "features": {
+        "class": "N"
+      }
+    },
+    {
+      "id": "b",
+      "stem": "daks",
+      "state": "base",
+      "features": {
+        "class": "N"
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "ambiguous",
+      "surface": "daks"
+    },
+    {
+      "id": "blocked",
+      "surface": "mini-dakss"
+    },
+    {
+      "id": "small",
+      "surface": "mini-dak"
+    }
+  ]
+}
