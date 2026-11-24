@@ -160,3 +160,59 @@ migrate_annotations(old_data, new_data, registry, approvals,
 - `ArchiveError`：档案行有误（附 `line`）；
 - `DigestMismatchError`：档案摘要不符（附 `expected`/`actual`）；
 - `PublishError`：发布失败（`TargetExistsError` 为其子类，表示目标已存在）；结构非法输入仍是普通 `ValueError`。
+
+# 词形使用增量交付账本契约（ledger.Ledger）
+
+`Ledger(path, data)` 在一个离线本地目录里维护词形使用事实、封存水位与下游交付确认。它不修改词典、不发布词典分片、不迁移签注档案；`process`、`build_release`、`Workspace`、`build_corpora`、`trace_analysis`、`apply_errata`、`migrate_annotations` 等既有接口保持原样。同一时刻只要求一个写入者，全部状态只用标准库持久化。
+
+## 词典绑定
+
+构造时先按 `process` 的完整语义编译 `data` 的全部 `forms`（不受 `queries` 限定）；词典非法抛普通 `ValueError`，且在任何目录或文件被创建之前抛出。绑定身份 = 编译后完整 `forms` 规范 JSON 字节的 SHA-256（小写十六进制）。`queries` 的内容与顺序、`lemmas`/`rules`/`states` 数组的无意义顺序变化不产生不同 `forms`，因此不改变绑定；实际词面、特征或（词元，有序规则路径）分析身份变化则身份不同。
+
+- 空路径：创建工作区并写入 `binding.json`（内嵌版本、身份与全部编译后 forms）与初始 `ledger.json`。
+- 已存在路径：重开必须提供产生相同 forms 的词典，否则抛 `BindingMismatchError`（附 `expected_id`/`actual_id`），磁盘状态不改动。
+- 持久描述符缺失、损坏、形状不符、内嵌 forms 与身份不符、已冻结包内容与包 ID 不符，抛 `LedgerIntegrityError`。
+
+## 修订写入（write_revisions）
+
+入参为非空修订数组，每项恰好含 `event`（1..64 代码点、无 Cc/Cs 的文本）、正整数 `revision`、`value`。结构错误（字段缺失或多余、类型错误、`revision` 非正整数、`period` 负或非整数、文本越界或含 Cc/Cs、analysis 四字段不完整、特征/规则 id 非法、同批 `(event, revision)` 重复、空批次）抛普通 `ValueError` 并拒绝整批。
+
+`value` 为 `null` 表示撤回；否则恰好含非负整数 `period`、原拼写 `text` 与完整 `analysis`（`lemma`、最终 NFC `surface`、完整 `features`、有序 `rules`）。业务规则（冲突类均继承 `RevisionError`，且定位到 `event` 与 `revision`）：
+
+- 每个事件首个修订必须是 1，后续编号必须连续；跳号或不从 1 开始抛 `RevisionGapError`。
+- 已记录的同 `(event, revision)` 只能以完全相同内容重放，内容不同抛 `RevisionConflictError`；完全相同的重放安全，不新增事实、不推进 `state_version`。
+- 撤回只能针对已存在事件（同批次先创建后撤回合法），否则抛 `UnknownEventError`。
+- 非空 analysis 必须是绑定词典实际产出的同身份分析（词元、有序规则路径、词面、特征全部一致），且 `unicodedata.normalize("NFC", text)` 等于该分析词面；不满足抛 `UnboundAnalysisError`。同形同特征的另一条规则路径不是替代项。原拼写原样保留。
+- 一个批次可含同一事件的多个连续新修订，数组顺序不影响结果；先核完整批次，再一次性生效。任一项失败则当前事实、封存水位、待确认包与下游基线全部不变。
+
+返回 `accepted_new`、`replayed`、`state_version`。仅纯重放（无新增事实）时 `state_version` 不变。
+
+## 事实查询与封存
+
+- `current_facts()`：每个事件只取最新修订，撤回事件不计数；其余按 `period` 与完整分析身份聚合 `count`，排序固定为（period、分析词面、lemma、有序 rules）。开放时期事实照常出现，封存或下游确认不隐藏合法更正。
+- `get_event(event_id)`：返回该事件最新修订号与完整值（含原拼写，撤回为 `null`）；未知事件抛 `UnknownEventError`。
+- `sealed_facts()` / `confirmed_facts()`：分别给出当前封存事实聚合与下游已确认基线聚合，行形状与排序同 `current_facts()`。
+- `seal(period)`：`period` 为非负整数，把 `closed_through` 单调推进到该值（中间时期一并视为封存），倒退抛 `MonotonicSealError`；同值重放不推进版本。封存不禁止迟到事件与更正；只有当前归属时期 `period <= closed_through` 的有效事实进入封存聚合，开放时期事实不能提前进入下游交付。
+
+## 增量交付（next_package / confirm）
+
+系统分别维护「当前封存事实」与「下游已确认基线」两份聚合。`next_package()` 的净差 = 两者按键（period、完整分析身份）聚合后的计数差：正数为增加、负数为撤销、零差不输出，行按与事实查询相同的固定次序排列。某事件经多次修订后回到已确认贡献时净差为零，不产生交付；实现按已确认状态求净差，不按修订日志逐条外发。
+
+- 无净差时返回 `NoDelivery`（`status == "no_delivery"`），不生成空包、不推进检查点、不改任何状态。
+- 有净差时冻结一个 `DeliveryPackage`（`status == "package"`），含稳定 `package_id`、`start_checkpoint`/`end_checkpoint`（两端聚合规范字节各自的 SHA-256）、冻结时 `closed_through` 与有序净差行。包 ID = 包规范字节（键排序、非 ASCII 不转义、无多余空白的 UTF-8 JSON）的 SHA-256，因此同一业务状态得到同一包；源路径与时间不进入身份。
+- 包内容先以 `packages/<package_id>.json` 内容寻址落盘，再由唯一的 `ledger.json` 原子提交登记。包在确认前冻结：重复取得（含重开工作区、另起进程）返回字节等价的同一包；期间到达的新修订或新封存只进入后续包。
+- `confirm(package_id)`：必须引用当前待确认包 ID；正确确认把净差应用到基线（计数归零的键移除）、清空待确认登记，之后下一份包基于新基线计算。正确确认可重放（同 ID 再次调用为空操作）；未知或过期 ID 抛 `UnknownPackageError`，不推进状态。纯负数包与最终抵消为零的更正遵守相同规则。
+
+## 持久化与恢复
+
+存储布局：`binding.json`（绑定描述符与完整 forms）、`ledger.json`（唯一可变状态描述符：版本、dictionary_id、单调 `state_version`、`closed_through`、每事件有序修订流、基线聚合、待确认/最近确认包 ID）、`packages/<id>.json`（冻结包字节）、`tmp/`（原子写临时目录）。所有写入为临时文件 fsync 后 `os.replace` 原子替换；每个写入、封存、冻结、确认操作恰好对应一次 `ledger.json` 提交，冻结包字节在该提交前 durable。
+
+重开同一路径只能观察到完整旧状态或完整新状态：修订与聚合同处一个描述符，不存在「修订已记但聚合未更新」；封存与可交付事实由同一状态重算；确认与基线推进同一提交；已冻结包按内容 ID 持久保存，重试取回原包而不用新事实改造。成功提交但调用方未收到返回时，重开后按相同参数重试即为安全重放（修订内容幂等、封存同值幂等、`next_package` 返回同一冻结包、确认同 ID 幂等），无需猜测操作是否生效。
+
+## 错误分类
+
+结构非法输入是普通 `ValueError`；业务与运行错误继承 `LedgerError`（继承 `RuntimeError`）：`BindingMismatchError`、`LedgerIntegrityError`、`RevisionConflictError`、`RevisionGapError`、`UnknownEventError`、`UnboundAnalysisError`（四者均为 `RevisionError` 子类，附 `event`/`revision`）、`MonotonicSealError`（附 `current`/`requested`）、`UnknownPackageError`（附 `package_id`）。
+
+## 故障注入
+
+模块级 `_CRASH_BEFORE_COMMIT` / `_CRASH_AFTER_COMMIT` 钩子（签名 `hook(kind, ledger)`，`kind` 为 `"write"`/`"seal"`/`"freeze"`/`"confirm"`）仅供测试注入 `SystemExit`，分别在唯一描述符提交点前后触发；生产代码不设置钩子。

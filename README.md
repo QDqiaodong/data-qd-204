@@ -112,6 +112,33 @@ print(result["total_lines"], result["registry"])
 python -I examples/offline_migration.py
 ```
 
+## 词形使用事实的可更正增量交付账本
+
+`morph_paths.ledger.Ledger(path, data)` 在指定本地目录维护一份离线、持久化的交付账本：修订式词形使用事实（含撤回与更正链）、单调封存水位 `closed_through`、以及「当前封存事实 vs 下游已确认基线」的净差交付。工作区绑定的是按 `process` 完整语义编译的全部 `forms` 的内容身份（与 `queries` 和数组顺序无关）；实际词形、特征或分析路径变化的词典拒绝重开，词典非法时不创建工作区。
+
+```python
+from morph_paths import Ledger, DeliveryStatus
+
+ledger = Ledger("/path/to/ledger", dictionary)
+ledger.write_revisions([{"event": "e1", "revision": 1, "value": {...}}])
+ledger.seal(10)
+package = ledger.next_package()          # 冻结：净差行 + 起止检查点 + 包 ID
+if package.status == DeliveryStatus.PACKAGE:
+    ledger.confirm(package.package_id)   # 同 ID 确认可安全重放
+else:
+    ...                                  # NoDelivery：无净差，不推进检查点
+ledger.current_facts()                   # 开放时期与合法更正立即可见
+ledger.get_event("e1")                   # 最新修订与原拼写，供审计
+```
+
+整批修订先核后生效：同号异内容、缺号、未知事件撤回、未绑定分析均整批拒绝（业务冲突继承 `LedgerError` 并定位事件/修订号；结构错误是普通 `ValueError`），纯重放不推进 `state_version`。交付包按规范内容定 ID，确认前冻结，重复取得（含重开、新进程）字节等价；净差按已确认基线计算，多次修订回到已确认贡献时不产生交付。每个写入、封存、冻结、确认恰好对应一次 `ledger.json` 原子提交，冻结包先内容寻址落盘；故障注入钩子（`_CRASH_BEFORE_COMMIT`/`_CRASH_AFTER_COMMIT`）与子进程退出测试覆盖提交前后的可判定恢复。完整契约见 [数据契约](docs/contract.md)。
+
+离线演示（临时目录，不写网络、不改词典）：
+
+```sh
+python -I examples/offline_ledger.py
+```
+
 ## 使用与实际结果
 
 ```python
@@ -130,7 +157,7 @@ publish("run/another-sample.json", result)
 {"ambiguous_queries": 1, "derivations": 6, "distinct_surfaces": 5, "lemmas": 2, "queries": 3}
 ```
 
-已通过 112 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）、语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等）、来源查证与勘误回写 27 项（组合标记重排归属、外内前缀次序、U+0344 共享源下标、共享词干整批约束、63 字符分支上限、16,384 条同形路径单次查证 48 MiB 堆峰值上界等），以及已签注语料迁移 46 项（唯一/歧义/无解分配、批准不替代资格核验、末行签注错误定位、摘要不符、目标不覆盖、分解拼写保真、≥96 MiB 档案在 64 MiB 堆峰值内流式迁移等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 146 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）、语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等）、来源查证与勘误回写 27 项（组合标记重排归属、外内前缀次序、U+0344 共享源下标、共享词干整批约束、63 字符分支上限、16,384 条同形路径单次查证 48 MiB 堆峰值上界等）、已签注语料迁移 46 项（唯一/歧义/无解分配、批准不替代资格核验、末行签注错误定位、摘要不符、目标不覆盖、分解拼写保真、≥96 MiB 档案在 64 MiB 堆峰值内流式迁移等），以及增量交付账本 34 项（封存净差与冻结包字节等价、按已确认基线求净差而非逐条外发、迟到正/负补偿、原拼写保留与聚合身份、重放不推进版本、整批拒绝、检查点链接、同批创建后撤回、绑定身份与仅改 queries/顺序可重开、四类操作提交前后的子进程故障恢复等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 
