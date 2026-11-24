@@ -12,6 +12,40 @@ forms按规范化surface、lemma、规则id路径排序；queries保留输入顺
 
 输入错误抛ValueError，不发布部分数据。io.publish只创建新文件；examples固定演示API，不提供通用命令行工具产品。
 
+# 词面来源查证与勘误回写契约（trace_analysis / apply_errata）
+
+两个离线编辑API复用process的全部编译语义（可接受派生、特征兼容、大小上限、最终NFC、排序），不修改输入对象，不维护服务或磁盘状态。两者都先整份编译词典：词典非法抛ValueError，不因指定路径本身可走而放行。process、build_release、Workspace等既有接口保持原样。
+
+## trace_analysis(data, lemma, rules)：逐位置来源查证
+
+按（词元ID，有序规则ID路径）选择一条实际产出的分析；获接受的空路径与在中间状态被接受的路径均可选择。同形同特征的另一条分析不作替代，queries的选词不影响结果。lemma/rules结构非法抛ValueError；该身份未产出抛AnalysisNotFoundError。
+
+返回恰好两个键：
+
+- analysis：该分析的lemma、surface（最终NFC词面）、features、rules，与process的forms行一致。
+- positions：按最终词面代码点顺序逐项给出index、char、sources。sources是该位置的全部来源，按（类别、属主、字段、下标）排序并去重；每个来源是`{"lemma": 词元ID, "field": "stem", "index": i}`或`{"rule": 规则ID, "field": "prefix"/"suffix", "index": i}`，index为**原输入字段**（未正规化拼写）里的零基代码点下标，不按UTF-8字节、可见字形或正规化后的字段计算。空字段不贡献位置。
+
+来源按Unicode规范等价确定：参与该路径的原始字符按词面拼接次序（后应用规则的前缀在外、词干居中、后缀按应用次序）看成带来源的NFD分解原子，同一原字符分成多份时每份仍属该原字符；最终词面字符同理带各自输出位置；两侧分别按组合类稳定排序（同类组合标记保持原相对次序）后按对应原子归属，去掉重复来源。这同时规定了跨字段组合、组合标记重排与一个源字符影响多个最终位置的口径。查证不改变任何旧编译结果。
+
+查证只计算被指定分析的逐位置来源，不为整份词典保留逐字符来源表。验收口径：64代码点词干、14层每层两条空变换规则、仅末态接受的图（16,384条接受路径）上，单次查证（含整词典编译与结果）的CPython tracemalloc堆峰值低于48 MiB。
+
+## apply_errata(data, errata)：确认勘误写回并交付修订词典
+
+errata为0..2000条申请的数组，针对同一份未修改词典。每条恰好含lemma、rules、start、end、replacement、confirmed：一个批内互不重复的分析身份；其**原最终词面**上的非空半开区间[start,end)；原样写入源字段的替换字符串（可以为空）；编辑确认的**完整**修订后NFC词面（1..64代码点、无Cc/Cs、已是NFC）。结构非法抛ValueError并拒绝整批。
+
+每条申请先按trace_analysis的同一口径查证。只有同时满足以下条件的区间才可回写源字段，否则抛IntervalNotWritableError（定位申请序号与分析身份）：
+
+- 区间内全部来源属于同一个源字段（同一属主的stem或prefix或suffix），且在原字符串中恰好构成一个连续切片；
+- 该切片里的任何原字符都不再贡献给同一分析的区间外位置（例如源字符经规范分解同时喂给区间内外时，不能只改区间内那一份）。
+
+不猜拆分、不换字段、不改另一条路径。所有切片以修改前的原字段为坐标：不同申请指定同一切片且写入同样的替换字符串时只写一次；同范围不同替换、或其他相交切片，抛ConflictingSlicesError（定位源字段与所涉切片）并拒绝整批。不相交切片共同生效，前一处替换的长度变化不移动后一处在旧源文本中的目标。除这些切片外保留词典全部内容，无关文本保留原始Unicode拼写（不正规化）。
+
+整批共同生效后重跑现有完整编译：修订词典必须编译通过；每个申请身份仍存在、特征不变、实际NFC词面逐一等于confirmed；任何未申请的分析完整保留且词面、特征不变，不得出现新分析。不靠删行、只检查订正位置、只检查queries或只检查申请路径来放行。任一约束不满足抛RevisionRejectedError（至少定位一处申请、源字段或受影响分析），不交付部分修订词典。
+
+成功返回恰好两个键：dictionary（完整的原输入格式词典，调用方可直接交给原process）与writes（实际写入记录，按属主类别、属主ID、字段、起点排序，每项含lemma或rule、field、start、end、old、new）。同样的申请事实不因申请次序改变交付的词典或写入记录。
+
+错误类别均以ErrataError（继承ValueError）为基类，可区分：AnalysisNotFoundError（未产出的分析，附lemma/rules）、IntervalNotWritableError（不可回写的区间，附request/lemma/rules/detail）、ConflictingSlicesError（相交或分歧的切片，附field/slices/detail）、RevisionRejectedError（整批生效后不满足编译或词形约束，附detail及可定位的lemma/rules/request）；结构非法输入仍是普通ValueError。
+
 # 分片发布契约（release.build_release）
 
 build_release(data)复用process的全部编译语义（可接受派生、特征兼容、大小上限、最终NFC、排序），发布所有forms，与输入queries的选择和顺序、lemmas/rules数组顺序无关。process、load、publish接口保持原样。

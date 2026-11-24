@@ -66,6 +66,27 @@ batch2 = build_corpora(revised_dictionary, next_docs, batch1["exposure"])
 python -I examples/offline_split.py
 ```
 
+## 词面来源查证与勘误回写
+
+编辑在词形表里看到错字时，`morph_paths.trace_analysis(data, lemma, rules)` 按（词元 ID，有序规则 ID 路径）查证一条实际产出的分析：返回该分析、最终 NFC 词面，以及每个词面位置来自哪个词元 `stem` 或规则 `prefix`/`suffix` 的哪个原输入代码点下标（按 Unicode 规范等价对齐，覆盖跨字段组合与组合标记重排）。`morph_paths.apply_errata(data, errata)` 把一批编辑确认的勘误（分析身份、原词面区间、替换串、确认后的完整 NFC 词面）共同生效：只有区间能安全映射回单一源字段切片、整批无相交冲突、且修订词典通过完整编译并保持全部未申请分析不变时才交付完整的原输入格式词典与实际写入记录，否则按类别拒绝，不交付部分修订。完整契约见 [数据契约](docs/contract.md)。
+
+```python
+from morph_paths import trace_analysis, apply_errata
+
+traced = trace_analysis(dictionary, "L", ["tone"])      # 逐位置来源
+revised = apply_errata(dictionary, [                    # 安全时交付修订词典
+    {"lemma": "L", "rules": ["tone"], "start": 1, "end": 2,
+     "replacement": "", "confirmed": "ä"},
+])
+process(revised["dictionary"])                          # 可直接交给原 process
+```
+
+离线演示（不写磁盘）：
+
+```sh
+python -I examples/offline_errata.py
+```
+
 ## 使用与实际结果
 
 ```python
@@ -84,7 +105,7 @@ publish("run/another-sample.json", result)
 {"ambiguous_queries": 1, "derivations": 6, "distinct_surfaces": 5, "lemmas": 2, "queries": 3}
 ```
 
-已通过 39 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复），以及语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 66 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）、语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等），以及来源查证与勘误回写 27 项（组合标记重排归属、外内前缀次序、U+0344 共享源下标、共享词干整批约束、63 字符分支上限、16,384 条同形路径单次查证 48 MiB 堆峰值上界等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 

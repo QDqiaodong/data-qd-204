@@ -1,6 +1,15 @@
 """Domain data processing API; synthetic offline baseline."""
 from .service import process
 from .split import build_corpora
+from .errata import (
+    apply_errata,
+    trace_analysis,
+    AnalysisNotFoundError,
+    ConflictingSlicesError,
+    ErrataError,
+    IntervalNotWritableError,
+    RevisionRejectedError,
+)
 from .release import build_release, Release, bucket_for_surface, BUCKET_IDS
 from .receiver import (
     Workspace,
@@ -19,6 +28,13 @@ from .receiver import (
 __all__ = [
     "process",
     "build_corpora",
+    "apply_errata",
+    "trace_analysis",
+    "AnalysisNotFoundError",
+    "ConflictingSlicesError",
+    "ErrataError",
+    "IntervalNotWritableError",
+    "RevisionRejectedError",
     "build_release",
     "Release",
     "bucket_for_surface",
