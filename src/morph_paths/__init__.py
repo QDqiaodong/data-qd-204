@@ -34,6 +34,14 @@ from .receiver import (
     parse_manifest,
     parse_shard,
 )
+from .rebase import (
+    rebase_layers,
+    RebaseError,
+    forms_identity,
+    MAX_LAYERS,
+    MAX_TOTAL_ANALYSES,
+    MAX_TOTAL_SUPPRESSIONS,
+)
 from .ledger import (
     Ledger,
     DeliveryPackage,
@@ -84,6 +92,12 @@ __all__ = [
     "DataIntegrityError",
     "parse_manifest",
     "parse_shard",
+    "rebase_layers",
+    "RebaseError",
+    "forms_identity",
+    "MAX_LAYERS",
+    "MAX_TOTAL_ANALYSES",
+    "MAX_TOTAL_SUPPRESSIONS",
     "Ledger",
     "DeliveryPackage",
     "NoDelivery",

@@ -216,3 +216,53 @@ migrate_annotations(old_data, new_data, registry, approvals,
 ## 故障注入
 
 模块级 `_CRASH_BEFORE_COMMIT` / `_CRASH_AFTER_COMMIT` 钩子（签名 `hook(kind, ledger)`，`kind` 为 `"write"`/`"seal"`/`"freeze"`/`"confirm"`）仅供测试注入 `SystemExit`，分别在唯一描述符提交点前后触发；生产代码不设置钩子。
+
+# 适配层重基契约（rebase_layers）
+
+区域词典编辑团队在统一的有限词形词典上维护地区、机构或产品专用的增补与屏蔽层。父词典更新后，`rebase_layers(old_base, new_base, layers)` 把同一批层操作按原意图重放到新父版，交付新的有效分析集合、逐项冲突状态与可继续重基的层记录。它是纯离线单次调用：不修改任何输入对象，不发布词典、不改写父词典或层源文件，不维护跨调用状态；`process`、`build_release`、`Workspace`、`build_corpora`、`trace_analysis`、`apply_errata`、`migrate_annotations`、`Ledger` 等既有接口保持原样。
+
+## 输入
+
+- `old_base`、`new_base`：两份完整的五字段词典，各自按 `process` 的完整语义整份编译全部 `forms`，不使用 `queries` 限定范围。任一份编译报错即整体拒绝（普通 `ValueError`，`RebaseError` 为其子类）。
+- `layers`：0..32 个层对象的有序数组，从父层向子层排列；数组顺序有业务意义。每层恰好含 `layer_id`、`base_id`、`additions`、`suppressions`：
+  - `layer_id`：原 ID 格式，一次调用内唯一，且不得为保留名 `base`。
+  - `base_id`：创建该层时父词典全部规范 `forms` 的规范 JSON（键排序、非 ASCII 不转义、无多余空白）SHA-256 小写十六进制。所有输入层都必须等于 `old_base` 的实际 `forms` 身份，否则整次拒绝。
+  - `additions`：完整五字段词典，按现有编译规则产生该层新增分析；编译失败即拒绝。
+  - `suppressions`：屏蔽操作数组。
+
+每条屏蔽操作指定一个较早来源层（`base` 表示父词典，或此前按顺序出现过的 `layer_id`），并明确一种策略：
+
+- `snapshot`：目标是完整分析行，含来源层与 `lemma`、最终 NFC `surface`、完整 `features`、有序 `rules`。只有整行仍完全相同才屏蔽。
+- `follow`：目标含来源层、`lemma` 与有序 `rules`。父版改动表面或特征时仍按 `(lemma, rules)` 稳定身份屏蔽当前行；身份不存在时不得猜测替代。
+
+`source_layer` 可作为 `source` 的同义键；目标行可平铺在操作上，或整体放在单个 `target`（或 `analysis`）对象下。
+
+结构非法、层 ID 重复、`base_id` 不符、来源不是 `base` 或此前层（含指向自身或未来层）、同层出现重复屏蔽目标、目标在声明来源层中从未产出、词典编译失败，以及每次调用 `old_base` + `new_base` + 全部 `additions` 的编译分析总数或全部屏蔽操作总数超过 20,000，都拒绝整次调用，不返回部分结果。每个输入词典仍遵守原有大小上限。
+
+## 分析身份
+
+分析身份至少由（来源层，词元 ID，有序规则路径）共同决定。同表面或同特征不代表同一分析：不同来源层的分析不合并，不同规则路径的同形项不折叠。有效视图按 `(old_base, new_base)` 事实重算，不用旧事实替代新事实，也不用新事实撤销旧操作。
+
+## 重放与状态
+
+从 `new_base` 开始，按层顺序重放：每层先执行其屏蔽操作，之后加入该层 `additions` 产生的新增分析。更高层只可屏蔽此前已加入且当前可见的分析。对每条屏蔽操作：
+
+- `snapshot`：完整目标仍存在且可见时屏蔽该行，报 `applied`。来源层仍有相同 `(lemma, rules)` 身份但完整行已变时报 `changed`，不屏蔽新行。身份已不存在时报 `missing`。若较早操作已屏蔽该目标，报 `already_hidden`，不得记作对另一行的成功删除。
+- `follow`：来源层仍有相同 `(lemma, rules)` 身份且当前可见时屏蔽其当前完整行（即使表面或特征已变），报 `applied`。身份不存在报 `missing`。目标已被更早操作屏蔽时报 `already_hidden`。
+
+`changed`、`missing`、`already_hidden` 均为可观察冲突状态；对应原操作必须原样保留在 `rebased_layers` 中，不得静默删除、改写目标或自动猜配。新父版中某目标暂时缺失不撤销屏蔽意图：只要保留记录被再次重基且目标重新出现，`snapshot` 在整行复原时、`follow` 在身份再现时自动重新生效。旧父版事实仅用于确认操作最初合法，新父版事实用于计算当前有效视图。
+
+## 输出
+
+成功返回恰好五个键：
+
+- `forms`：有效分析行，按（最终 NFC `surface`、`source_layer`、`lemma`、有序 `rules`）排序；每行是完整编译分析加 `source_layer`（`base` 或产生它的层 `layer_id`）。
+- `suppressions`：按层顺序、层内操作顺序逐项给出 `layer_id`、`index`（同层内 0 基操作下标）、`policy`、`target`（目标身份；`snapshot` 含完整行，`follow` 含 `(lemma, rules)`）与 `status`（`applied`/`changed`/`missing`/`already_hidden`）。
+- `old_base_id` / `new_base_id`：各自全部规范 `forms` 的规范 JSON SHA-256。
+- `rebased_layers`：与输入层同序、同 `layer_id`、同 `additions`、同 `suppressions` 的层记录，`base_id` 一律更新为 `new_base_id`。该数组可直接作为下一次 `rebase_layers` 的 `layers`：其绑定满足下一次调用中全部输入层绑定其 `old_base` 的要求，并保留全部原始增补与屏蔽事实（含未应用操作）。
+
+相同业务事实不因词典数组中无意义排列（`states`/`rules`/`lemmas` 顺序、`queries` 选择、增补词典内部顺序）而改变结果；有序层的顺序、层 ID 与操作顺序具有业务意义。
+
+## 错误
+
+结构非法输入是普通 `ValueError`；`RebaseError`（`ValueError` 子类）标识整次拒绝。两者都不返回部分结果。重基结果由调用方决定是否接受；本 API 不发布词典、不改写父词典或适配层源文件。
