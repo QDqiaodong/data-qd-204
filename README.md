@@ -87,6 +87,31 @@ process(revised["dictionary"])                          # 可直接交给原 pro
 python -I examples/offline_errata.py
 ```
 
+## 已签注语料迁移到新版词形规则
+
+规则被拆分或重编号后，用户看到的词面和特征不变，但已归档的签注仍引用旧规则路径。`morph_paths.migrate_annotations(...)` 接收旧、新两份完整词典、稳定引用登记表、编辑批准的候选替换、旧签注档案路径、获准时的 SHA-256 与新包路径：对全部登记引用解出**恰好一种**新版分析分配（不贪心、不猜测、不忽略未用到的引用），再把 UTF-8 JSONL 签注档案改写成一份可直接消费的迁移包（先新登记表、后迁移行，共用同一分配），同时返回新登记表。原词典、旧档案和现有 API 均不改动；失败时目标位置不留半成品。完整契约见 [数据契约](docs/contract.md)。
+
+```python
+from morph_paths import migrate_annotations
+
+result = migrate_annotations(
+    old_dictionary, new_dictionary,
+    [{"ref": "A", "lemma": "L", "rules": ["ra"]},
+     {"ref": "B", "lemma": "L", "rules": ["rb"]}],
+    {"A": [["rx"], ["ry"]], "B": [["rx"]]},   # 批准路径仍须通过同词元/词面/特征核验
+    "signed.jsonl", approved_sha256, "migrated.jsonl",
+)
+print(result["total_lines"], result["registry"])
+```
+
+错误可辨识：`NoSolutionError`（无解）、`AmbiguousAssignmentError`（多解）、`ArchiveError`（档案行错，附行号）、`DigestMismatchError`（摘要不符）、`PublishError`/`TargetExistsError`（发布失败/目标已存在）。
+
+离线演示（不写网络）：
+
+```sh
+python -I examples/offline_migration.py
+```
+
 ## 使用与实际结果
 
 ```python
@@ -105,7 +130,7 @@ publish("run/another-sample.json", result)
 {"ambiguous_queries": 1, "derivations": 6, "distinct_surfaces": 5, "lemmas": 2, "queries": 3}
 ```
 
-已通过 66 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）、语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等），以及来源查证与勘误回写 27 项（组合标记重排归属、外内前缀次序、U+0344 共享源下标、共享词干整批约束、63 字符分支上限、16,384 条同形路径单次查证 48 MiB 堆峰值上界等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
+已通过 112 项测试：原 6 项编译业务测试，发布端 8 项（分片归属、清单与规范字节、顺序与身份、输入顺序无关性等）、接收端 10 项（四个验收场景、严格校验与新进程崩溃恢复）、语料切分 15 项（全局最优舍弃、跨批历史阻断、预组/分解拼写、小批穷举对照、6,000+6,000 篇内存上界等）、来源查证与勘误回写 27 项（组合标记重排归属、外内前缀次序、U+0344 共享源下标、共享词干整批约束、63 字符分支上限、16,384 条同形路径单次查证 48 MiB 堆峰值上界等），以及已签注语料迁移 46 项（唯一/歧义/无解分配、批准不替代资格核验、末行签注错误定位、摘要不符、目标不覆盖、分解拼写保真、≥96 MiB 档案在 64 MiB 堆峰值内流式迁移等）。数值和排序语义见契约，不以文件哈希代替业务结果断言。
 
 ## 当前边界与来源
 

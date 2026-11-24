@@ -10,6 +10,16 @@ from .errata import (
     IntervalNotWritableError,
     RevisionRejectedError,
 )
+from .migration import (
+    migrate_annotations,
+    MigrationError,
+    NoSolutionError,
+    AmbiguousAssignmentError,
+    ArchiveError,
+    DigestMismatchError,
+    PublishError,
+    TargetExistsError,
+)
 from .release import build_release, Release, bucket_for_surface, BUCKET_IDS
 from .receiver import (
     Workspace,
@@ -35,6 +45,14 @@ __all__ = [
     "ErrataError",
     "IntervalNotWritableError",
     "RevisionRejectedError",
+    "migrate_annotations",
+    "MigrationError",
+    "NoSolutionError",
+    "AmbiguousAssignmentError",
+    "ArchiveError",
+    "DigestMismatchError",
+    "PublishError",
+    "TargetExistsError",
     "build_release",
     "Release",
     "bucket_for_surface",

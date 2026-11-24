@@ -99,3 +99,64 @@ token 按 text 的 NFC 在当前词典全部 forms 中查找，原拼写不改�
 - train / holdout：交付语料，按文档 ID 排序；每篇保留 id 与有序 tokens，token 保留原拼写 text 与核准的 gold（lemma、有序 rules、完整 features）。
 - dropped：未交付文档数组，按文档 ID 排序，每项含 id 与 reason。invalid 附 token_positions；history 附 match={category,value}，给出一个实际命中历史的键；conflict 附 with 与 key={category,value}，with 是一篇实际保留的另一侧文档 ID，key 是双方共享的键，不引用同样未交付的文档。原因优先级：invalid 先于 history，history 先于 conflict。
 - exposure：本批训练暴露键记录，恰好是实际交付训练文档的三类键并集，去重排序后与历史输入同格式（doc_ids、surfaces、lemmas 三个数组），可直接并入历史。调用方只在实际使用这批训练语料后才合并；盲测、弃用文档及旧历史都不得混进这个增量。
+
+# 已签注语料迁移契约（migrate_annotations）
+
+编辑重构词形规则时可能拆分规则或更换规则 ID，用户可见的词面与特征不变，但已归档的签注仍引用旧规则路径。`migrate_annotations` 在离线、单次调用内把稳定引用重新绑定到新版分析，并把已签注 JSONL 档案改写成一份可直接消费的迁移包；不修改任何输入对象，不维护跨调用状态，不依赖网络。`process`、`build_release`、`build_corpora`、`trace_analysis`、`apply_errata`、`Workspace` 等既有接口保持原样。
+
+## 输入
+
+签名：
+
+```python
+migrate_annotations(old_data, new_data, registry, approvals,
+                    archive_path, archive_sha256, target_path)
+```
+
+- `old_data`、`new_data`：两份完整的五字段词典输入，按同一份 `process` 编译语义各自整份编译，不使用 `queries` 限定范围。任一份编译报错即整体拒绝（普通 `ValueError`），即使登记项未涉及的路径有问题也不能放行。
+- `registry`：登记表数组，每项恰好含 `ref`（唯一标识，原 ID 格式）、`lemma`、有序 `rules`。`ref` 批内唯一；每项必须指向旧版**确实产出**的一条分析（词元、有序规则路径），不同登记项不得指向同一条旧分析。同词元、同词面、同特征而路径不同的分析是不同身份。结构非法或指向未产出的旧分析抛 `ValueError`。
+- `approvals`：映射 `ref` -> 有序规则路径数组，表示编辑批准该引用可继承的新版路径。每项至多 8 条且不得重复；只能为已登记引用给出候选（否则 `ValueError`）。未出现的 `ref` 只允许原路径；显式空列表表示不允许任何路径。路径即使出现在批准表中也仍须通过下面的资格核验，不得因路径 ID 恰好未变而跳过。
+- `archive_path`：旧签注档案路径，见下节。
+- `archive_sha256`：该档案获准时的 SHA-256，小写十六进制 64 位。格式非法抛 `ValueError`。
+- `target_path`：要创建的迁移包路径，必须是尚不存在的文件，绝不覆盖。
+
+## 稳定引用的继承分配
+
+对每条登记项，候选新版分析满足：**同一词元**、**同一最终 NFC 词面**、**同一完整特征**，且其有序规则路径来自该 `ref` 的批准表（未列出时只能是原路径）。批准只限定可选路径，不能代替资格核验；未批准的路径从不猜测。
+
+对**全部**登记项（含档案未用到的项）必须找到**恰好一种**完整分配：每项分到一个合格分析，且不同 `ref` 不得分到同一条新版分析。无合格分配或无法一一配对时抛 `NoSolutionError`；存在多于一种完整分配时抛 `AmbiguousAssignmentError`。两者可区分，且都不做逐项贪心、字典序猜测或只处理档案用到的项。新版允许有未分配给任何引用的分析。
+
+分配实现：候选图上的 Hopcroft-Karp 最大匹配求出一种完整分配；随后检查是否唯一（任一引用持有未被匹配使用的候选，或匹配之外存在交替环，即说明存在第二种完整分配）；迭代实现，深度与登记规模无关。
+
+## 档案校验与迁移
+
+旧档案是 UTF-8 JSONL，每行一个对象，恰好含 `doc`、`pos`、`text`、`ref`、`analysis`：
+
+- `doc`、`ref` 用现有 ID 格式；`pos` 为非负整数（布尔不算），行键 `(doc, pos)` 在全档案中严格递增，可不连续。
+- `text` 按当前词面输入口径校验（1..64 代码点、无 Cc/Cs），但**保留其原始拼写**，不写回规范化后的文本。
+- `ref` 必须已登记；`analysis` 必须完整等于该 `ref` 对应的**旧**分析（lemma、surface、features、rules 四个字段），且 `text` 的 NFC 必须等于旧分析词面。旧行即使碰巧也是新版的合法行，也仍按旧签注核对，不能跳过。
+- 每行以 LF 结尾；拒绝重复 JSON 键、缺失或多余字段、非法字段值；单行（含换行）至多 16 KiB，档案至多 300000 行、256 MiB（均计入换行）。
+- 不得删行、重排或重签任何行。
+
+档案错误抛 `ArchiveError`，其 `line` 为一基行号。校验与迁移在**同一次读取**中完成：以实际用于迁移的原始字节流式计算 SHA-256，调用方给出的 `archive_sha256` 不符即抛 `DigestMismatchError`，且不发布任何包；不会先核对一遍再用变了的档案生成包。
+
+## 迁移包
+
+成功时 `target_path` 出现单个 UTF-8 JSONL 文件（按实际消费的登记分配生成，两部分同一分配）：
+
+1. 先按 `ref` 排序输出每个登记项 `{"ref": ..., "analysis": {...}}`，`analysis` 为分配给该引用的完整新版分析（lemma、surface、features、rules）。
+2. 再按原序输出全部签注行；每行只在 `analysis` 换成其 `ref` 所分配的新版分析，`doc`、`pos`、`text`（原拼写）、`ref` 保持不变。
+
+每行是键排序、非 ASCII 不转义、无多余空白、LF 结尾的规范 JSON 对象。目标文件只在整个包合格后一次性出现（同目录临时文件 + 硬链接），不覆盖已有目标。分配失败、档案结构或签注错误、摘要不符、或发布前写入失败时，目标位置不留任何半成品或临时文件，也不预先创建目标父目录。
+
+## 返回与错误
+
+成功返回：`path`（包路径）、`registry`（新登记表数组，按 `ref` 排序，与包首部相同）、`annotation_lines`（签注行数）、`total_lines`（登记项数 + 签注行数）、`archive_sha256`（实际消费字节的摘要）。
+
+错误边界均可辨识，且都继承 `MigrationError`（继承 `ValueError`）：
+
+- `NoSolutionError`：无完整分配（附未获候选的 `ref` 列表）；
+- `AmbiguousAssignmentError`：存在多个完整分配；
+- `ArchiveError`：档案行有误（附 `line`）；
+- `DigestMismatchError`：档案摘要不符（附 `expected`/`actual`）；
+- `PublishError`：发布失败（`TargetExistsError` 为其子类，表示目标已存在）；结构非法输入仍是普通 `ValueError`。
